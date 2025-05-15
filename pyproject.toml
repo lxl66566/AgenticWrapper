@@ -1,7 +1,7 @@
 [project]
 name = "AgenticWrapper"
 version = "0.1.0"
-description = "A lightweight Python Agent framework for any LLM backend."
+description = "A lightweight Python framework for adding agent capabilities (tools calling, memory, structured outputs) to single custom LLM functions"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
@@ -30,3 +30,6 @@ Repository = "https://github.com/lxl66566/AgenticWrapper.git"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["AgenticWrapper"]

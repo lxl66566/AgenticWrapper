@@ -1,20 +1,37 @@
 # AgenticWrapper
 
-AgenticWrapper 是一个极为轻量级的 Python Agent 框架，它可以包装你提供的任意基础 LLM 函数，使其拥有 Agent 功能，包括**工具调用、记忆管理、结构化输出**等。
+English | [简体中文](README_zh-CN.md)
 
-AgenticWrapper 没有任何运行时依赖。
+AgenticWrapper is an extremely lightweight Python Agent framework that wraps your custom LLM function, enabling it with Agent capabilities, including **tool calling, memory management, and structured output**.
 
-## 快速开始
+AgenticWrapper has no runtime dependencies.
 
-### 安装
+## Quick Start
+
+### Installation
 
 ```bash
 pip install AgenticWrapper
 ```
 
-### 结构化输出
+### Basic Usage
 
-使用 Python dataclass 定义输出结构：
+```python
+from AgenticWrapper import Agent
+
+async def llm_func(messages: list[dict[str, str]]) -> str:
+    # Assume this is your custom LLM function
+    return "Hello, I'm AgenticWrapper."
+
+agent = Agent(llm_func)
+response = await agent.query("Hello")
+print(response)
+agent.clear_memory()
+```
+
+### Structured Output
+
+Use Python `dataclass` to define the output structure:
 
 ```python
 @dataclass
@@ -23,35 +40,37 @@ class SearchResult:
     results: List[str]
     total_count: int
 
-response = await agent.query("搜索相关内容", structured_output_type=SearchResult)
+response = await agent.query("Search for relevant content", structured_output_type=SearchResult)
 assert isinstance(response, SearchResult)
 ```
 
-### 工具调用
+### Tool Calling
 
-定义工具函数（工具函数的参数类型必须是 json 支持的类型）：
+Define a tool function, preferably with function documentation:
 
 ```python
 async def get_weather(location: str) -> str:
-    """获取天气信息"""
-    # 模拟 API 调用
+    """Get weather information"""
+    # Simulate an API call
     await asyncio.sleep(0.1)
     if location.lower() == "london":
-        return "天气晴朗，天气温度为 15°C。"
+        return "The weather is clear, with a temperature of 15°C."
     elif location.lower() == "paris":
-        return "天气晴朗，天气温度为 18°C。"
+        return "The weather is clear, with a temperature of 18°C."
     else:
-        return f"我不知道 {location} 的天气情况。"
+        return f"I don't know the weather for {location}."
 ```
 
-在 Agent 中使用工具：
+Use the tool in the Agent:
 
 ```python
 agent = Agent(llm_interaction_func=mock_llm_func, tools=[get_weather])
-response = await agent.query("查询 london 的天气")
+response = await agent.query("Check the weather in london")
 print(response)
 ```
 
-### 更多例子
+Tool function parameters and return types must be `str`. If your tool function has complex parameters, you need to define a new wrapper function to handle serialization/deserialization and communicate the format to the LLM.
 
-更多示例可以在 [example.py](example.py) 中找到。
+### More Examples
+
+More examples can be found in [example.py](example.py).
