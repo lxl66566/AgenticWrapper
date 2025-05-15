@@ -1,0 +1,15 @@
+该项目是一个轻量级的 wrapper，旨在对任意 LLM 后端实现 agent 功能。Agent 代表智能体，拥有自己的提示词、记忆，可以调用工具，能够结构化输出。
+
+假设我现在有一个 `async def gen(input: list[dict[str, str]]) -> str` 函数，代表 LLM 的交互，该 input 遵循 openai message 接口规范。
+
+我们可以创建一个 Agent 对象 `agent = Agent(LLM 交互函数: AsyncCallable[list[dict[str, str]], str], initial_prompt: list[dict[str, str]] = [], tools: List[AsyncCallable[str, str]] = [], temperature = 0.2, max_tokens = 0, max_iterations = ..., ...)`，并调用 agent.query(str) 来运行 Agent 查询。
+
+Agent 对象应提供以下功能：
+
+1. 初始化 Agent 对象，包括初始 prompt 和工具列表、结构化返回值。结构化返回值参数接受一个 dataclass，用于描述输出的结构。你需要解析该 dataclass 的字段名称和类型，以提供对应的 prompt。
+   - 接收 LLM 的回复，并尝试解析它为 dataclass 对象。如果解析成功，返回解析后的对象；如果解析失败，则返回原始字符串。
+2. 每次问答都存在 Agent 记忆中，记忆可手动清除。
+
+你不能假定使用的 LLM 函数有任何其他功能，例如自带调用工具和结构化输出的 API。调用工具和结构化输出都需要你自己使用提示词实现。提示词都使用英文。
+
+给我的代码中，注释需要是中文。
