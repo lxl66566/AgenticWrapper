@@ -13,7 +13,7 @@ async def mock_llm_func(messages: List[dict[str, str]]) -> str:
 
     # 模拟工具调用响应
     if last_message.strip().startswith("计算 "):
-        return f'{{"tool_name": "calculator", "tool_input": "{last_message.strip().removeprefix("计算 ")}"}}'
+        return f'{{"tool_name": "calculator", "arguments": {{"expression": "{last_message.strip().removeprefix("计算 ")}"}}}}'
 
     # 模拟结构化输出响应
     if "TestResponse" in last_message:
@@ -135,4 +135,7 @@ async def test_max_iterations():
 
 
 if __name__ == "__main__":
+    # import logging
+
+    # logging.basicConfig(level=logging.DEBUG)
     pytest.main([__file__])

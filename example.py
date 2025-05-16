@@ -11,7 +11,7 @@ client = AsyncClient()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
 
@@ -46,11 +46,16 @@ async def main():
     response = await agent.query("你好")
     print(response)
 
+    # 带有结构化输出的回复
+
     agent = Agent(mock_llm_func)
     response = await agent.query(
         "请你为“金字塔”赋予两到三个 tag", structured_output_type=NounTag
     )
+    assert isinstance(response, NounTag)
     print(response)
+
+    # 调用工具
 
     async def calculator(expression: str) -> str:
         """一个简单的计算器工具，接受 Python 数学表达式并返回结果"""
@@ -63,6 +68,16 @@ async def main():
     response = await agent.query(
         "请你调用工具为我计算 1.056^9 * 18765 / 123，其中除法为整除"
     )
+    print(response)  # 249
+
+    # 工具的参数可以是任何 json 类型，但是返回值必须是 str
+
+    async def multiply(a: int, b: int) -> str:
+        return str(a * b)
+
+    agent = Agent(mock_llm_func, tools=[multiply])
+
+    response = await agent.query("请你用工具计算 999954 * 12325")
     print(response)
 
     # with temperature and other kwargs

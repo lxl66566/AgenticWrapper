@@ -69,7 +69,7 @@ response = await agent.query("查询 london 的天气")
 print(response)
 ```
 
-工具函数的参数类型和返回类型必须是 `str`。如果你的工具函数拥有复杂的参数，你需要定义一个新的 wrapper 函数进行参数的序列化/反序列化，并将其格式告知 LLM。
+工具函数的参数类型必须是合法 json 类型，返回类型必须是 `str`。
 
 ### 更多示例
 

@@ -69,7 +69,7 @@ response = await agent.query("Check the weather in london")
 print(response)
 ```
 
-Tool function parameters and return types must be `str`. If your tool function has complex parameters, you need to define a new wrapper function to handle serialization/deserialization and communicate the format to the LLM.
+Tool function parameters types must be valid json types, return types must be `str`.
 
 ### More Examples
 
