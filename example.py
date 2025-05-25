@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import Dict, List
 
+import litellm
 from ollama import AsyncClient
 
 from AgenticWrapper import Agent
@@ -11,12 +13,16 @@ client = AsyncClient()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+# disable debug logging for other libs
+logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
+logging.getLogger("httpcore").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
 
 
-# 一个模拟的 LLM 交互函数
-async def mock_llm_func(messages: List[Dict[str, str]]) -> str:
+# ollama example
+async def mock_llm_func_ollama(messages: List[Dict[str, str]]) -> str:
     response = await client.chat(
         model="rhkrdfl/qwq:7b-q4",
         messages=messages,
@@ -24,7 +30,19 @@ async def mock_llm_func(messages: List[Dict[str, str]]) -> str:
     return response.message.content or "LLM response is empty."
 
 
-# 一个模拟的 LLM 交互函数，带有 temperature 参数
+# litellm example
+async def mock_llm_func_litellm(messages: List[Dict[str, str]]) -> str:
+    # fill in your api key here
+    os.environ["GEMINI_API_KEY"] = ""
+
+    response = await litellm.acompletion(
+        model="gemini/gemini-2.5-flash-preview-04-17",
+        messages=messages,
+    )
+    return response.choices[0].message.content or "LLM response is empty."  # type: ignore
+
+
+# example of how to specify custom temperature and other options
 async def mock_llm_func_with_temperature(
     messages: List[Dict[str, str]], temperature: float
 ) -> str:
@@ -36,27 +54,19 @@ async def mock_llm_func_with_temperature(
     return response.message.content or "LLM response is empty."
 
 
+# structured output example
 @dataclass
 class NounTag:
     tags: List[str]
 
 
 async def main():
-    agent = Agent(mock_llm_func)
+    # 1. simple usage
+    agent = Agent(mock_llm_func_ollama)
     response = await agent.query("你好")
     print(response)
 
-    # 带有结构化输出的回复
-
-    agent = Agent(mock_llm_func)
-    response = await agent.query(
-        "请你为“金字塔”赋予两到三个 tag", structured_output_type=NounTag
-    )
-    assert isinstance(response, NounTag)
-    print(response)
-
-    # 调用工具
-
+    # 2. tool calling
     async def calculator(expression: str) -> str:
         """一个简单的计算器工具，接受 Python 数学表达式并返回结果"""
         try:
@@ -64,24 +74,22 @@ async def main():
         except Exception as e:
             return f"计算错误: {str(e)}"
 
-    agent = Agent(mock_llm_func, tools=[calculator])
+    agent = Agent(mock_llm_func_litellm, tools=[calculator])
     response = await agent.query(
         "请你调用工具为我计算 1.056^9 * 18765 / 123，其中除法为整除"
     )
     print(response)  # 249
 
-    # 工具的参数可以是任何 json 类型，但是返回值必须是 str
-
+    # 3. tool parameters can be any json type, but the return value must be str
     async def multiply(a: int, b: int) -> str:
         return str(a * b)
 
-    agent = Agent(mock_llm_func, tools=[multiply])
+    agent = Agent(mock_llm_func_litellm, tools=[multiply])
 
     response = await agent.query("请你用工具计算 999954 * 12325")
     print(response)
 
-    # with temperature and other kwargs
-
+    # 4. with temperature and other kwargs
     agent = Agent(mock_llm_func_with_temperature, default_temperature=0.4)
     response = await agent.query(
         """这是带有 temperature 参数的 LLM 交互函数测试。
