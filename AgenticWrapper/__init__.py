@@ -66,12 +66,9 @@ def _generate_tool_schema(tool_func: Callable[..., Awaitable[str]]) -> Dict[str,
         json_type = _map_py_type_to_json_type(param_type)
         param_schema: Dict[str, Any] = {"type": json_type}
 
-        # Try to get parameter docstring (requires specific docstring format or use a library)
-        # For simplicity, we'll use a generic description.
-        # A more advanced version could parse the tool's main docstring for param descriptions.
-        param_schema["description"] = (
-            f"Parameter '{name}' of type {getattr(param_type, '__name__', str(param_type))}."
-        )
+        # If the parameter has a default value, add it to the schema
+        if param.default is not inspect.Parameter.empty:
+            param_schema["default"] = param.default
 
         parameters_schema["properties"][name] = param_schema
 
@@ -95,8 +92,7 @@ class Agent:
         default_temperature: Optional[float] = None,
         default_max_tokens: Optional[int] = None,
         max_iterations: int = 5,
-        tool_selection_prompt_type: str = "function_call_object",  # Defaulting to richer format
-        max_log_length: int = 300,
+        max_log_length: int = 700,
     ):
         """
         Initialize an Agent object.
@@ -109,10 +105,6 @@ class Agent:
             temperature: Optional temperature parameter for LLM (implementation depends on llm_interaction_func)
             max_tokens: Optional maximum number of tokens for LLM (implementation depends on llm_interaction_func)
             max_iterations: Maximum number of iterations for tool interactions or internal reasoning in one query call
-            tool_selection_prompt_type: Type of tool selection prompt.
-                                      "json_string": Prompts LLM to output JSON string with tool name and parameters
-                                      "function_call_object": Prompts LLM to output OpenAI-like function call object
-                                      (Note: This is still implemented via prompting, not relying on LLM's built-in features)
             max_log_length: Maximum length of log messages to print (in debug mode)
         """
         self.llm_interaction_func = llm_interaction_func
@@ -128,7 +120,6 @@ class Agent:
         self.temperature = default_temperature
         self.max_tokens = default_max_tokens
         self.max_iterations = max_iterations
-        self.tool_selection_prompt_type = tool_selection_prompt_type
 
         self._system_prompt_parts: List[str] = []
         self._log_length = max_log_length
@@ -151,62 +142,25 @@ class Agent:
                     inspect.getdoc(tool) or "No description available for this tool."
                 )
                 tool_schema = self.tool_schemas[tool_name]
-
-                if self.tool_selection_prompt_type == "json_string":
-                    # For json_string, we tell the LLM that tool_input should be a JSON string of arguments
-                    param_examples = []
-                    for p_name, p_schema in tool_schema.get("properties", {}).items():
-                        example_val = "..."
-                        if p_schema["type"] == "string":
-                            example_val = f"example_{p_name}"
-                        elif p_schema["type"] == "integer":
-                            example_val = 123
-                        elif p_schema["type"] == "boolean":
-                            example_val = True
-                        param_examples.append(f'"{p_name}": "{example_val}"')
-
-                    example_args_json_string = "{{ {} }}".format(
-                        ", ".join(param_examples)
-                    )
-
-                    tool_descriptions_for_prompt.append(
-                        f'- Tool Name: "{tool_name}"\n'
-                        f"  Description: {tool_doc}\n"
-                        f'  To call, use JSON: {{"tool_name": "{tool_name}", "tool_input": "{example_args_json_string}"}}\n'
-                        f"  Note: tool_input MUST be a JSON string containing the arguments for the tool."
-                    )
-                elif self.tool_selection_prompt_type == "function_call_object":
-                    # For function_call_object, we provide the full schema
-                    schema_for_prompt = {
-                        "name": tool_name,
-                        "description": tool_doc,
-                        "parameters": tool_schema,
-                    }
-                    tool_descriptions_for_prompt.append(
-                        json.dumps(schema_for_prompt, ensure_ascii=False)
-                    )
-
-            if self.tool_selection_prompt_type == "json_string":
-                self._system_prompt_parts.append(
-                    "You have access to the following tools. "
-                    "If you need to use a tool, respond ONLY with a single JSON string matching the tool's call format. "
-                    "The 'tool_input' field must be a JSON STRING representing an object of the tool's arguments. "
-                    "Do not include any other text or explanation before or after the JSON. "
-                    "If you don't need to use a tool, respond to the user directly.\n"
-                    "Available tools:\n" + "\n".join(tool_descriptions_for_prompt)
+                schema_for_prompt = {
+                    "tool_name": tool_name,
+                    "description": tool_doc,
+                    "parameters": tool_schema,
+                }
+                tool_descriptions_for_prompt.append(
+                    json.dumps(schema_for_prompt, ensure_ascii=False)
                 )
-            elif self.tool_selection_prompt_type == "function_call_object":
-                self._system_prompt_parts.append(
-                    "You have access to the following tools. "
-                    "If you decide to use a tool, respond ONLY with a JSON object in the following format, "
-                    "containing 'tool_name' (string) and 'arguments' (an object containing the arguments for the tool). "
-                    "Do not include any other text or explanation before or after the JSON.\n"
-                    'Example: {"tool_name": "tool_name_example", "arguments": {"arg_name1": "value1", "arg_name2": 123}}\n'
-                    "Available tool schemas:\n[\n"
-                    + ",\n".join(tool_descriptions_for_prompt)
-                    + "\n]\n"
-                    "If you don't need to use a tool, respond to the user directly."
-                )
+
+            self._system_prompt_parts.append(
+                "You have access to the following tools. "
+                "If you decide to use a tool, respond ONLY with a JSON object in the following format, "
+                "containing 'tool_name' (string) and 'arguments' (an object containing the arguments for the tool). "
+                "Do not include any other text or explanation before or after the JSON.\n"
+                "Available tool schemas:\n[\n"
+                + ",\n".join(tool_descriptions_for_prompt)
+                + "\n]\n"
+                "If you don't need to use a tool, respond to the user directly."
+            )
 
         if structured_output_type:
             if not is_dataclass(structured_output_type):
@@ -342,39 +296,7 @@ class Agent:
                     ):
                         tool_name = potential_tool_call["tool_name"]
 
-                        if (
-                            self.tool_selection_prompt_type == "json_string"
-                            and "tool_input" in potential_tool_call
-                        ):
-                            tool_input_val = potential_tool_call["tool_input"]
-                            if isinstance(tool_input_val, str):
-                                try:
-                                    tool_arguments = json.loads(tool_input_val)
-                                except json.JSONDecodeError as e:
-                                    logger.warning(
-                                        f"Tool input for '{tool_name}' is not valid JSON string: {tool_input_val}. Error: {e}"
-                                    )
-                                    # LLM might have failed to provide a JSON string, maybe it provided the object directly
-                                    if isinstance(tool_input_val, dict):  # Be lenient
-                                        tool_arguments = tool_input_val
-                                    else:  # Or it might have provided a simple string for a tool that expects one
-                                        # This case is tricky. If the tool expects a single string arg, how to pass it?
-                                        # For now, assume if json_string mode, tool_input is always a JSON string of an object.
-                                        # If it's not, it's an LLM error or a tool that doesn't fit this model well.
-                                        pass  # tool_arguments remains None
-                            elif isinstance(
-                                tool_input_val, dict
-                            ):  # LLM provided an object instead of string
-                                tool_arguments = tool_input_val
-                            else:
-                                logger.warning(
-                                    f"Tool input for '{tool_name}' is not a string or dict: {tool_input_val}"
-                                )
-
-                        elif (
-                            self.tool_selection_prompt_type == "function_call_object"
-                            and "arguments" in potential_tool_call
-                        ):
+                        if "arguments" in potential_tool_call:
                             if isinstance(potential_tool_call["arguments"], dict):
                                 tool_arguments = potential_tool_call["arguments"]
                             else:
