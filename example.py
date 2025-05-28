@@ -27,7 +27,7 @@ async def mock_llm_func_ollama(messages: List[Dict[str, str]]) -> str:
         model="rhkrdfl/qwq:7b-q4",
         messages=messages,
     )
-    return response.message.content or "LLM response is empty."
+    return response["message"]["content"] or "LLM response is empty."
 
 
 # litellm example

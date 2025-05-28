@@ -22,7 +22,7 @@ async def mock_llm_func(messages: List[dict[str, str]]) -> str:
         return '{"result": "测试消息"}'
 
     # 模拟普通对话响应
-    return f"这是对 '{last_message}' 的模拟回复"
+    return f"FINISH\n这是对 '{last_message}' 的模拟回复"
 
 
 # 测试用的数据类
@@ -78,7 +78,7 @@ async def test_tool_usage():
 @pytest.mark.asyncio
 async def test_structured_output():
     """测试结构化输出功能"""
-    agent = Agent(mock_llm_func)
+    agent = Agent(mock_llm_func, multiturn_mode=False)
 
     # 测试复杂结构化输出
     response = await agent.query(

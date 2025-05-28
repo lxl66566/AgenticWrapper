@@ -88,30 +88,32 @@ class Agent:
             Concatenate[List[Dict[str, str]], P], Awaitable[str]
         ],
         initial_prompt: Optional[List[Dict[str, str]]] = None,
-        tools: Optional[List[Callable[..., Awaitable[str]]]] = None,  # MODIFIED
+        tools: Optional[List[Callable[..., Awaitable[str]]]] = None,
         default_temperature: Optional[float] = None,
         default_max_tokens: Optional[int] = None,
-        max_iterations: int = 5,
+        max_iterations: int = 10,
         max_log_length: int = 700,
+        multiturn_mode: bool = True,  # 控制是否启用多轮对话模式
     ):
         """
         Initialize an Agent object.
 
         Parameters:
-            llm_interaction_func: Async function for LLM interaction. Takes a list of messages following OpenAI format and returns LLM's response string
-            initial_prompt: Initial prompt list following OpenAI message format
+            llm_interaction_func: Async function for LLM interaction. Takes a list of messages following OpenAI format and returns LLM's response string.
+            initial_prompt: Initial prompt list following OpenAI message format.
             tools: List of tool functions. Each tool is an async function that takes a string parameter and returns a string result.
-                  The tool's __name__ attribute is used as the tool name, and __doc__ as the tool description
-            temperature: Optional temperature parameter for LLM (implementation depends on llm_interaction_func)
-            max_tokens: Optional maximum number of tokens for LLM (implementation depends on llm_interaction_func)
-            max_iterations: Maximum number of iterations for tool interactions or internal reasoning in one query call
-            max_log_length: Maximum length of log messages to print (in debug mode)
+                  The tool's __name__ attribute is used as the tool name, and __doc__ as the tool description.
+            default_temperature: Optional temperature parameter for LLM (implementation depends on llm_interaction_func).
+            default_max_tokens: Optional maximum number of tokens for LLM (implementation depends on llm_interaction_func).
+            max_iterations: Maximum number of iterations for tool interactions or internal reasoning in one query call.
+            max_log_length: Maximum length of log messages to print (in debug mode).
+            multiturn_mode: Whether to enable multi-turn conversation mode. If True, LLM signals completion with "FINISH"; otherwise, LLM responds in a single turn.
         """
         self.llm_interaction_func = llm_interaction_func
         self.initial_prompt = initial_prompt.copy() if initial_prompt else []
         self.memory: List[Dict[str, str]] = self.initial_prompt.copy()
         self.tools = tools if tools else []
-        self.tool_map: Dict[str, Callable[..., Awaitable[str]]] = {  # MODIFIED
+        self.tool_map: Dict[str, Callable[..., Awaitable[str]]] = {
             tool.__name__: tool for tool in self.tools
         }
         self.tool_schemas: Dict[str, Dict[str, Any]] = {
@@ -120,6 +122,7 @@ class Agent:
         self.temperature = default_temperature
         self.max_tokens = default_max_tokens
         self.max_iterations = max_iterations
+        self.multiturn_mode = multiturn_mode  # 保存多轮对话模式设置
 
         self._system_prompt_parts: List[str] = []
         self._log_length = max_log_length
@@ -133,6 +136,93 @@ class Agent:
             structured_output_type: Optional structured output type
         """
         self._system_prompt_parts = []
+
+        # Only add general instructions about LLM thought process and FINISH token in multi-turn mode
+        if self.multiturn_mode:
+            self._system_prompt_parts.append(
+                "You are an AI assistant designed to help users. "
+                "**When you have completed the task and are ready to provide the final answer, "
+                "you MUST start your response with the word 'FINISH', then follow with the final answer.** "
+                "Think step-by-step. If you need to perform multiple steps or gather more information, "
+                "do not output 'FINISH' yet."
+            )
+        # Structured output prompt is only added if not in multi-turn mode
+        if structured_output_type and not self.multiturn_mode:
+            if not is_dataclass(structured_output_type):
+                raise ValueError("structured_output_type must be a dataclass.")
+            field_details = []
+            example_json_parts = []
+            for f in fields(structured_output_type):
+                origin = get_origin(f.type)
+                if origin is list:
+                    # Handle List types, e.g., List[str] -> "List[str]"
+                    args = get_args(f.type)
+                    if args:
+                        item_type_name = (
+                            args[0].__name__
+                            if hasattr(args[0], "__name__")
+                            else str(args[0])
+                        )
+                        field_type_name = f"List[{item_type_name}]"
+                    else:
+                        field_type_name = "List[Any]"
+                elif origin is dict:
+                    # Handle Dict types, e.g., Dict[str, int] -> "Dict[str, int]"
+                    args = get_args(f.type)
+                    if len(args) == 2:
+                        key_type_name = (
+                            args[0].__name__
+                            if hasattr(args[0], "__name__")
+                            else str(args[0])
+                        )
+                        value_type_name = (
+                            args[1].__name__
+                            if hasattr(args[1], "__name__")
+                            else str(args[1])
+                        )
+                        field_type_name = f"Dict[{key_type_name}, {value_type_name}]"
+                    else:
+                        field_type_name = "Dict[Any, Any]"
+                elif hasattr(f.type, "__name__"):
+                    field_type_name = f.type.__name__  # type: ignore
+                else:
+                    field_type_name = str(f.type)
+
+                field_details.append(f'  "{f.name}": "{field_type_name}"')
+                if field_type_name.startswith("str"):
+                    example_value = f"example {f.name}"
+                elif field_type_name.startswith("int"):
+                    example_value = 0
+                elif field_type_name.startswith("float"):
+                    example_value = 0.0
+                elif field_type_name.startswith("bool"):
+                    example_value = False
+                elif field_type_name.startswith("List"):
+                    example_value = []
+                elif field_type_name.startswith("Dict"):
+                    example_value = {}
+                else:
+                    example_value = "..."
+                example_json_parts.append(
+                    f'    "{f.name}": {json.dumps(example_value, ensure_ascii=False)}'
+                )
+
+            json_schema_desc = "{\n" + ",\n".join(field_details) + "\n}"
+            example_json = "{\n" + ",\n".join(example_json_parts) + "\n  }"
+            self._system_prompt_parts.append(
+                f"\nWhen you provide your final answer, and you are not using a tool, "
+                f"you MUST format your response as a single JSON object conforming to the following structure. "
+                f"Do not include any other text, explanations, or markdown formatting before or after the JSON object. "
+                f"Ensure all specified fields are present.\n"
+                f"Structure:\n{json_schema_desc}\n"
+                f"Example:\n{example_json}"
+            )
+        elif not self.multiturn_mode:
+            # Prompt for single-turn mode when structured_output_type is None
+            self._system_prompt_parts.append(
+                "You are an AI assistant designed to provide a direct and concise answer to the user's request in a single turn. "
+                "Do not use 'FINISH' or any other special tokens. Provide your complete answer immediately."
+            )
 
         if self.tools:
             tool_descriptions_for_prompt = []
@@ -162,64 +252,21 @@ class Agent:
                 "If you don't need to use a tool, respond to the user directly."
             )
 
-        if structured_output_type:
-            if not is_dataclass(structured_output_type):
-                raise ValueError("structured_output_type must be a dataclass.")
-            field_details = []
-            example_json_parts = []
-            for f in fields(structured_output_type):
-                field_type_name = (
-                    f.type.__name__ if hasattr(f.type, "__name__") else str(f.type)  # type: ignore
-                )
-                field_details.append(f'  "{f.name}": "{field_type_name}"')
-                if field_type_name == "str":
-                    example_value = f"example {f.name}"
-                elif field_type_name == "int":
-                    example_value = 0
-                elif field_type_name == "float":
-                    example_value = 0.0
-                elif field_type_name == "bool":
-                    example_value = False
-                elif field_type_name.startswith("List") or field_type_name.startswith(
-                    "list"
-                ):
-                    example_value = []
-                elif field_type_name.startswith("Dict") or field_type_name.startswith(
-                    "dict"
-                ):
-                    example_value = {}
-                else:
-                    example_value = "..."
-                example_json_parts.append(
-                    f'    "{f.name}": {json.dumps(example_value, ensure_ascii=False)}'
-                )
-
-            json_schema_desc = "{\n" + ",\n".join(field_details) + "\n}"
-            example_json = "{\n" + ",\n".join(example_json_parts) + "\n  }"
-            self._system_prompt_parts.append(
-                f"\nWhen you provide your final answer, and you are not using a tool, "
-                f"you MUST format your response as a single JSON object conforming to the following structure. "
-                f"Do not include any other text, explanations, or markdown formatting before or after the JSON object. "
-                f"Ensure all specified fields are present.\n"
-                f"Structure:\n{json_schema_desc}\n"
-                f"Example:\n{example_json}"
-            )
-
     def _get_current_messages_with_system_prompt(self) -> List[Dict[str, str]]:
         """
         Combine system prompt with current memory for sending to LLM.
         """
-        # 确保系统提示在最前面，并且只有一个
-        # 如果内存中已经有系统提示，我们可能会选择替换它或附加到它
-        # 这里采用简单策略：如果内存为空或第一个不是系统提示，则添加新的系统提示
+        # Ensure system prompt is at the beginning and only one exists
+        # Simple strategy: if memory is empty or first message is not system prompt, insert new system prompt
         current_messages = self.memory.copy()
         system_prompt_str = "\n\n".join(self._system_prompt_parts)
         if not system_prompt_str:
             return current_messages
-        if not current_messages or current_messages[0].get("role") != "system":
-            current_messages.insert(0, {"role": "system", "content": system_prompt_str})
-        else:
+        # Check if the first message is a system message, if so, update its content; otherwise, insert a new system message
+        if current_messages and current_messages[0].get("role") == "system":
             current_messages[0]["content"] = system_prompt_str
+        else:
+            current_messages.insert(0, {"role": "system", "content": system_prompt_str})
         return current_messages
 
     async def query(
@@ -240,6 +287,12 @@ class Agent:
         Returns:
             Response in the appropriate type based on structured_output_type
         """
+        # Check for invalid combination of multiturn_mode and structured_output_type
+        if self.multiturn_mode and structured_output_type:
+            raise ValueError(
+                "multiturn_mode and structured_output_type cannot be enabled simultaneously."
+            )
+
         # Rebuild system prompt to include new structured output type
         self._build_system_prompt(structured_output_type)
         self.memory.append({"role": "user", "content": user_input})
@@ -251,7 +304,10 @@ class Agent:
             llm_kwargs["max_tokens"] = self.max_tokens
         llm_kwargs.update(kwargs)
 
-        for iteration in range(self.max_iterations):
+        # In single-turn mode, only perform one iteration
+        iterations_to_run = 1 if not self.multiturn_mode else self.max_iterations
+
+        for iteration in range(iterations_to_run):
             messages_for_llm = self._get_current_messages_with_system_prompt()
             logger.debug(f"--- Iteration {iteration + 1} ---")
             logger.debug("--- Sending to LLM ---")
@@ -269,6 +325,53 @@ class Agent:
 
             logger.debug(f"--- LLM Response --- \n{llm_response_text}")
 
+            # Handle structured output if not in multiturn mode
+            if structured_output_type and not self.multiturn_mode:
+                try:
+                    # Attempt to strip markdown code block fences if present
+                    cleaned_response_text = llm_response_text.strip()
+                    if cleaned_response_text.startswith("```json"):
+                        cleaned_response_text = cleaned_response_text[
+                            len("```json") :
+                        ].strip()
+                    if cleaned_response_text.startswith("```"):
+                        cleaned_response_text = cleaned_response_text[
+                            len("```") :
+                        ].strip()
+                    if cleaned_response_text.endswith("```"):
+                        cleaned_response_text = cleaned_response_text[
+                            : -len("```")
+                        ].strip()
+
+                    parsed_json = json.loads(cleaned_response_text)
+                    structured_object = structured_output_type(**parsed_json)
+                    self.memory.append(
+                        {"role": "assistant", "content": llm_response_text}
+                    )
+                    return structured_object
+                except (json.JSONDecodeError, TypeError, ValueError) as e:
+                    logger.warning(
+                        f"Failed to parse response into structured_output_type ({type(e).__name__}). Response: {llm_response_text[:200]}"
+                    )
+                    self.memory.append(
+                        {"role": "assistant", "content": llm_response_text}
+                    )
+                    return llm_response_text  # Return raw string if parsing fails
+
+            # Check for FINISH token only in multi-turn mode
+            if self.multiturn_mode and llm_response_text.strip().startswith("FINISH"):
+                final_response_content = llm_response_text.strip()[
+                    len("FINISH") :
+                ].strip()
+                self.memory.append(
+                    {"role": "assistant", "content": llm_response_text}
+                )  # Store original LLM response
+                logger.debug(
+                    f"LLM signaled FINISH. Final response: {final_response_content[: self._log_length]}"
+                )
+                return final_response_content  # Return raw string if no structured output expected
+
+            # If no FINISH, proceed with tool call handling or as normal response
             if self.tools:
                 try:
                     # Attempt to strip markdown code block fences if present
@@ -337,49 +440,33 @@ class Agent:
 
                 except json.JSONDecodeError:
                     logger.debug(
-                        f"LLM response is not a valid JSON tool call: {llm_response_text[:200]}"
+                        f"LLM response is not a valid JSON tool call: {llm_response_text[: self._log_length]}"
                     )
                     pass  # Not a tool call, proceed as normal response
                 except Exception as e:
                     logger.error(
-                        f"Error processing potential tool call: {e}. Response: {llm_response_text[:200]}"
+                        f"Error processing potential tool call: {e}. Response: {llm_response_text[: self._log_length]}"
                     )
                     pass
 
-            self.memory.append({"role": "assistant", "content": llm_response_text})
-
-            if structured_output_type:
-                try:
-                    # Attempt to strip markdown code block fences if present for structured output too
-                    cleaned_response_text = llm_response_text.strip()
-                    if cleaned_response_text.startswith("```json"):
-                        cleaned_response_text = cleaned_response_text[
-                            len("```json") :
-                        ].strip()
-                    if cleaned_response_text.startswith("```"):
-                        cleaned_response_text = cleaned_response_text[
-                            len("```") :
-                        ].strip()
-                    if cleaned_response_text.endswith("```"):
-                        cleaned_response_text = cleaned_response_text[
-                            : -len("```")
-                        ].strip()
-
-                    parsed_json = json.loads(cleaned_response_text)
-                    structured_object = structured_output_type(**parsed_json)
-                    return structured_object
-                except (json.JSONDecodeError, TypeError, ValueError) as e:
-                    logger.warning(
-                        f"Failed to parse LLM response into structured_output_type ({type(e).__name__}). Response: {llm_response_text[:200]}"
-                    )
-                    if iteration == self.max_iterations - 1:
-                        return llm_response_text  # Return raw string on last attempt
+            # If LLM did not FINISH and did not call a tool, and is in multi-turn mode, add its response to memory and add a "continue" message
+            if self.multiturn_mode:
+                self.memory.append({"role": "assistant", "content": llm_response_text})
+                self.memory.append({"role": "user", "content": "continue"})
+                logger.debug("LLM did not FINISH. Appending 'continue' to memory.")
+                continue  # Continue to next iteration
             else:
-                return llm_response_text  # Return raw string if no structured output expected
+                # In single-turn mode, if LLM did not FINISH and did not call a tool, return its response directly
+                self.memory.append({"role": "assistant", "content": llm_response_text})
+                logger.debug("Single-turn mode. Returning LLM response directly.")
+                return llm_response_text
 
+        # Max iterations reached
         final_response = (
-            self.memory[-1]["content"]
-            if self.memory and self.memory[-1]["role"] == "assistant"
+            self.memory[-2][
+                "content"
+            ]  # The second to last message is the LLM's last response
+            if len(self.memory) >= 2 and self.memory[-2]["role"] == "assistant"
             else "Max iterations reached without a final response."
         )
         logger.debug(
